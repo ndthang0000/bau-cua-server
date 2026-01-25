@@ -26,7 +26,8 @@ io.on('connection', (socket) => {
 
   // 1. Tham gia phòng
 
-  socket.on('join_room', async ({ roomId, userData, roomConfig }) => {
+  socket.on('join_room', async (data, callback) => {
+    const { roomId, userData, roomConfig } = data
     console.log({ roomId, userData, roomConfig })
 
     let room = await Room.findOne({ roomId, status: { $ne: 'finished' } });
@@ -89,11 +90,16 @@ io.on('connection', (socket) => {
     // Gửi thông tin phòng mới nhất cho tất cả mọi người
     const socketsInRoom = await io.in(roomId).allSockets();
     console.log(`Phòng ${roomId} hiện có ${socketsInRoom.size} người:`, socketsInRoom);
+    // GỌI CALLBACK AN TOÀN
+    if (typeof callback === 'function') {
+      callback({ success: true });
+    }
     io.to(roomId).emit('room_update', room);
   });
 
 
   socket.on('leave_room', async ({ roomId, userId }) => {
+    console.log("leave_room: ", { roomId, userId })
     socket.leave(roomId);
 
     let room = await Room.findOne({ roomId });
@@ -106,6 +112,7 @@ io.on('connection', (socket) => {
         // await Room.deleteOne({ roomId }); 
       } else {
         await room.save();
+        console.log("vpp đay lp")
         // Thông báo cho những người còn lại
         io.to(roomId).emit('room_update', room);
       }
