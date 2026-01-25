@@ -1,0 +1,13 @@
+{
+  "apps": [
+    {
+      "name": "bau-cua-server-",
+      "script": "node server.js",
+      "instances": "1",
+      "autorestart": true,
+      "watch": false,
+      "time": true,
+      "node_args": "--max-old-space-size=2048"
+    }
+  ]
+}
