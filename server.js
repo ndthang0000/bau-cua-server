@@ -319,13 +319,16 @@ io.on('connection', (socket) => {
 
   });
 
-  socket.on('get_rooms_info', async (roomIds) => {
-    // Tìm các phòng chưa finished trong danh sách ID gửi lên
+  socket.on('get_recent_rooms_info', async ({ roomIds, userId }, callback) => {
+    try {
+  // 1. Tìm các phòng chưa kết thúc, nằm trong danh sách ID gửi lên
+  // VÀ user này phải là một thành viên (để đảm bảo tính riêng tư)
     const rooms = await Room.find({
       roomId: { $in: roomIds },
-      status: { $ne: 'finished' }
-    });
-
+      // status: { $ne: 'finished' },
+      "members.userId": userId // Chỉ lấy những phòng user này từng tham gia
+    }).select('roomId members status createdAt').sort({ createdAt: -1 }).limit(3);
+      // 2. Format dữ liệu trả về
     const info = rooms.map(r => ({
       id: r.roomId,
       players: r.members.length,
@@ -333,7 +336,18 @@ io.on('connection', (socket) => {
       status: r.status
     }));
 
-    socket.emit('rooms_info_res', info);
+      // 3. Thực thi callback trả về cho Frontend
+      callback({
+        success: true,
+        data: info
+      });
+    } catch (error) {
+      console.error("Error fetching recent rooms:", error);
+      callback({
+        success: false,
+        message: "Internal Server Error"
+      });
+    }
   });
 
   const handleRoomCleanup = async (roomId) => {
@@ -348,6 +362,41 @@ io.on('connection', (socket) => {
     }
   };
 
+  // Sự kiện lấy lịch sử cược có phân trang và lọc
+  socket.on('get_bet_history', async (params, callback) => {
+    try {
+      const { roomId, userId, filterType, selectedUserId, page = 1, limit = 10 } = params;
+
+      let query = { roomId: roomId };
+
+      // Lọc theo "Của tôi" hoặc "Cả phòng/Thành viên cụ thể"
+      if (filterType === 'mine') {
+        query.userId = userId;
+      } else if (selectedUserId && selectedUserId !== 'all') {
+        query.userId = selectedUserId;
+      }
+
+      const skip = (page - 1) * limit;
+
+      // Truy vấn dữ liệu từ MongoDB
+      const history = await Bet.find(query)
+        .sort({ createdAt: -1 }) // Ván mới nhất lên đầu
+        .skip(skip)
+        .limit(limit);
+
+      const totalCount = await Bet.countDocuments(query);
+
+      callback({
+        success: true,
+        data: history,
+        totalPages: Math.ceil(totalCount / limit),
+        currentPage: page
+      });
+    } catch (error) {
+      console.error("Lỗi get_bet_history:", error);
+      callback({ success: false, message: "Không thể lấy lịch sử cược" });
+    }
+  });
   socket.on('disconnect', async () => {
     const room = await Room.findOne({ "members.socketId": socket.id, status: { $ne: 'finished' } });
     if (room) {
@@ -360,7 +409,7 @@ io.on('connection', (socket) => {
       await room.save();
 
       // Nếu hết người, đợi 1 phút rồi kiểm tra để kết thúc phòng
-      if (room.members.length === 0) {
+      if (room.members.every(m => !m.isOnline)) {
         setTimeout(() => handleRoomCleanup(room.roomId), 60000);
       }
 

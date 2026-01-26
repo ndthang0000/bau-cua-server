@@ -7,7 +7,10 @@
       "autorestart": true,
       "watch": false,
       "time": true,
-      "node_args": "--max-old-space-size=2048"
+      "node_args": "--max-old-space-size=2048",
+      "env": {
+        "NODE_ENV": "master"
+      }
     }
   ]
 }

@@ -2,8 +2,8 @@ const Bet = require("../models/Bet");
 const Room = require("../models/Room");
 
 const GAME_TIMES = {
-  shaking: 8, // 10s lắc bát
-  betting: 15, // 15s đặt cược
+  shaking: 6, // 6s lắc bát
+  betting: process.env.NODE_ENV === 'master' ? 30 : 15, // 15s đặt cược
   result: 10    // 10s hiển thị kết quả và trả thưởng
 };
 
@@ -32,7 +32,7 @@ async function calculateRewards(roomId, roundId, finalResult) {
       userChanges[bet.socketId] = { winAmount: 0, totalBet: 0 };
     }
     userChanges[bet.socketId].totalBet += bet.amount;
-
+    bet.results = finalResult; // Lưu kết quả lắc bát vào bet
     if (matchCount > 0) {
       const winProfit = bet.amount * matchCount;
       const totalReturn = bet.amount + winProfit;
@@ -71,8 +71,6 @@ async function calculateRewards(roomId, roundId, finalResult) {
 }
 
 // server.js (Logic: Betting -> Shaking -> Result)
-
-// gameLogic.js
 
 const startGameLoop = async (io, roomId) => {
   let room = await Room.findOne({ roomId });
