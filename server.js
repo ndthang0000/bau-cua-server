@@ -353,7 +353,7 @@ io.on('connection', (socket) => {
   const handleRoomCleanup = async (roomId) => {
     const room = await Room.findOne({ roomId, status: { $ne: 'finished' } });
 
-    if (room && room.members.length === 0) {
+    if (room && room.members.every(m => !m.isOnline)) {
       // Thay vì xóa, chúng ta đánh dấu là đã kết thúc
       room.status = 'finished';
       room.finishedAt = new Date();
