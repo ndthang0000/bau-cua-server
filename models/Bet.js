@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const BetSchema = new mongoose.Schema({
   roomId: { type: String, required: true, index: true },
-  roundId: { type: String, required: true, index: true }, // ID của ván đấu hiện tại
+  roundId: { type: Number, required: true, index: true }, // ID của ván đấu hiện tại
   socketId: { type: String, required: true },
   userId: { type: String },
   nickname: String,

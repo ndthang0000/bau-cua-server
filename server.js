@@ -138,6 +138,9 @@ io.on('connection', (socket) => {
 
   // 3. Đặt cược
   socket.on('place_bet', async ({ roomId, door, amount, nickname, userId }, callback) => {
+    if (amount <= 0) {
+      return callback?.({ success: false, message: "Số tiền cược phải lớn hơn 0!" });
+    }
     try {
       const room = await Room.findOne({ roomId });
       if (!room || room.status !== 'betting') {
@@ -196,6 +199,10 @@ io.on('connection', (socket) => {
   // server.js
   socket.on('place_bet_batch', async (data, callback) => {
     const { roomId, doors, amountPerDoor, totalAmount, userId, nickname } = data;
+
+    if (amountPerDoor <= 0) {
+      return callback?.({ success: false, message: "Số tiền cược phải lớn hơn 0!" });
+    }
 
     try {
       // 1. Kiểm tra trạng thái phòng
@@ -385,7 +392,7 @@ io.on('connection', (socket) => {
         .limit(limit);
 
       const totalCount = await Bet.countDocuments(query);
-
+      console.log(history)
       callback({
         success: true,
         data: history,
