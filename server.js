@@ -99,11 +99,24 @@ io.on('connection', (socket) => {
   });
 
   socket.on('start_game', async ({ roomId }) => {
+    const room = await Room.findOne({ roomId });
 
-    startGameLoop(io, roomId);
-    // Bắn tin cho cả làng chuyển sang màn hình Game
-    console.log(`Phòng ${roomId} đã bắt đầu trò chơi.`);
-    // Đồng thời cập nhật dữ liệu phòng mới nhất
+    if (!room) return;
+
+    if (room.config.playMode === 'auto') {
+      startGameLoop(io, roomId);
+      console.log(`Phòng ${roomId} đã bắt đầu trò chơi (AUTO mode).`);
+    } else {
+      // Manual mode: bắt đầu betting phase ngay lập tức
+      room.status = 'betting';
+      room.lastResult = [];
+      room.totalBets = { bau: 0, cua: 0, tom: 0, ca: 0, ga: 0, nai: 0 };
+      room.timeLeft = 0;
+      await room.save();
+      io.to(roomId).emit('room_update', room);
+      io.to(roomId).emit('phase_change', { phase: 'betting', message: 'Bắt đầu đặt cược!' });
+      console.log(`Phòng ${roomId} đã bắt đầu betting phase (MANUAL mode).`);
+    }
   });
 
   socket.on('leave_room', async ({ roomId, userId }) => {
@@ -122,6 +135,186 @@ io.on('connection', (socket) => {
       io.to(roomId).emit('room_update', room);
     }
     console.log(`User ${userId} đã rời phòng ${roomId}`);
+  });
+
+  // ===== MANUAL MODE EVENTS =====
+
+  // Dealer bắt đầu lắc (kết thúc cược)
+  socket.on('manual_start_shaking', async ({ roomId, userId }, callback) => {
+    try {
+      const room = await Room.findOne({ roomId });
+
+      if (!room) {
+        return callback?.({ success: false, message: "Phòng không tồn tại!" });
+      }
+
+      if (room.config.playMode !== 'manual') {
+        return callback?.({ success: false, message: "Phòng không ở chế độ manual!" });
+      }
+
+      if (room.currentDealer.userId !== userId) {
+        return callback?.({ success: false, message: "Chỉ nhà cái mới có thể điều khiển!" });
+      }
+
+      if (room.status !== 'betting') {
+        return callback?.({ success: false, message: "Phải ở phase betting mới có thể lắc!" });
+      }
+
+      // Chuyển sang phase shaking
+      room.status = 'shaking';
+      await room.save();
+
+      io.to(roomId).emit('room_update', room);
+      io.to(roomId).emit('phase_change', { phase: 'shaking', message: 'Đang lắc bát...' });
+
+      callback?.({ success: true, message: "Đã bắt đầu lắc bát!" });
+      console.log(`[Manual] Phòng ${roomId} bắt đầu shaking phase`);
+    } catch (error) {
+      console.error("Manual start shaking error:", error);
+      callback?.({ success: false, message: "Lỗi hệ thống!" });
+    }
+  });
+
+  // Dealer mở bát và hiển thị kết quả
+  socket.on('manual_show_result', async ({ roomId, userId }, callback) => {
+    try {
+      const room = await Room.findOne({ roomId });
+
+      if (!room) {
+        return callback?.({ success: false, message: "Phòng không tồn tại!" });
+      }
+
+      if (room.config.playMode !== 'manual') {
+        return callback?.({ success: false, message: "Phòng không ở chế độ manual!" });
+      }
+
+      if (room.currentDealer.userId !== userId) {
+        return callback?.({ success: false, message: "Chỉ nhà cái mới có thể điều khiển!" });
+      }
+
+      if (room.status !== 'shaking') {
+        return callback?.({ success: false, message: "Phải ở phase shaking mới có thể mở bát!" });
+      }
+
+      const currentRoundId = (room.history ? room.history.length : 0) + 1;
+
+      // Random kết quả
+      const results = ['bau', 'cua', 'tom', 'ca', 'ga', 'nai'];
+      const finalResult = [
+        results[Math.floor(Math.random() * 6)],
+        results[Math.floor(Math.random() * 6)],
+        results[Math.floor(Math.random() * 6)]
+      ];
+
+      // Import calculateRewards từ gameLogic
+      const { calculateRewards } = require('./utils/gameLogic');
+
+      // Tính toán thắng thua
+      const rewardData = await calculateRewards(roomId, currentRoundId, finalResult);
+
+      if (!rewardData) {
+        return callback?.({ success: false, message: "Lỗi khi tính toán kết quả!" });
+      }
+
+      const { room: updatedRoom, userChanges, totalDealerProfit } = rewardData;
+
+      // Gửi kết quả cá nhân cho từng người chơi
+      Object.keys(userChanges).forEach(socketId => {
+        const change = userChanges[socketId];
+        io.to(socketId).emit('game_result_individual', {
+          winAmount: change.winAmount,
+          netProfit: change.winAmount - change.totalBet
+        });
+      });
+
+      // Gửi kết quả cho nhà cái
+      const dealerSocketId = updatedRoom.currentDealer.socketId;
+      io.to(dealerSocketId).emit('dealer_result', {
+        profit: totalDealerProfit
+      });
+
+      // Cập nhật trạng thái phòng về result
+      updatedRoom.status = 'result';
+      await updatedRoom.save();
+
+      io.to(roomId).emit('room_update', updatedRoom);
+      io.to(roomId).emit('phase_change', {
+        phase: 'result',
+        result: finalResult,
+        message: 'Kết quả!'
+      });
+
+      // Xử lý xoay vòng nhà cái (nếu có)
+      if (updatedRoom.config.dealerMode === 'rotate') {
+        updatedRoom.currentDealer.roundsLeft -= 1;
+
+        if (updatedRoom.currentDealer.roundsLeft <= 0) {
+          const currentIndex = updatedRoom.members.findIndex(m => m.userId === updatedRoom.currentDealer.userId);
+          const nextIndex = (currentIndex + 1) % updatedRoom.members.length;
+
+          updatedRoom.currentDealer = {
+            socketId: updatedRoom.members[nextIndex].socketId,
+            roundsLeft: updatedRoom.config.rotateRounds,
+            userId: updatedRoom.members[nextIndex].userId
+          };
+
+          io.to(roomId).emit('new_dealer', {
+            msg: `Đã đến lượt ${updatedRoom.members[nextIndex].nickname} làm cái!`,
+            dealerId: updatedRoom.members[nextIndex].userId
+          });
+        }
+        await updatedRoom.save();
+      }
+
+      callback?.({
+        success: true,
+        result: finalResult,
+        message: "Đã mở bát!"
+      });
+      console.log(`[Manual] Phòng ${roomId} hiển thị kết quả:`, finalResult);
+    } catch (error) {
+      console.error("Manual show result error:", error);
+      callback?.({ success: false, message: "Lỗi hệ thống!" });
+    }
+  });
+
+  // Dealer chuyển sang ván mới (Manual mode)
+  socket.on('manual_next_round', async ({ roomId, userId }, callback) => {
+    try {
+      const room = await Room.findOne({ roomId });
+
+      if (!room) {
+        return callback?.({ success: false, message: "Phòng không tồn tại!" });
+      }
+
+      if (room.config.playMode !== 'manual') {
+        return callback?.({ success: false, message: "Phòng không ở chế độ manual!" });
+      }
+
+      if (room.currentDealer.userId !== userId) {
+        return callback?.({ success: false, message: "Chỉ nhà cái mới có thể điều khiển!" });
+      }
+
+      if (room.status !== 'result') {
+        return callback?.({ success: false, message: "Phải ở phase result mới có thể sang ván mới!" });
+      }
+
+      // Reset dữ liệu và bắt đầu ván mới với betting phase
+      room.status = 'betting';
+      room.lastResult = [];
+      room.totalBets = { bau: 0, cua: 0, tom: 0, ca: 0, ga: 0, nai: 0 };
+      room.timeLeft = 0;
+      await room.save();
+
+      io.to(roomId).emit('room_update', room);
+      io.to(roomId).emit('phase_change', { phase: 'betting', message: 'Bắt đầu ván mới - Đặt cược!' });
+
+      callback?.({ success: true, message: "Đã bắt đầu ván mới!" });
+      console.log(`[Manual] Phòng ${roomId} bắt đầu ván mới (betting phase)`);
+    } catch (error) {
+      console.error("Manual next round error:", error);
+      callback?.({ success: false, message: "Lỗi hệ thống!" });
+    }
   });
 
   // 2. Bắt đầu xóc (Chuyển trạng thái)
@@ -159,7 +352,7 @@ io.on('connection', (socket) => {
 
       // 2. Lưu lệnh Bet
       const currentRoundId = Array.isArray(room.history) ? room.history.length + 1 : 1;
-      const newBet = new Bet({
+      const newBet = await new Bet({
         roomId,
         roundId: currentRoundId,
         socketId: socket.id,
@@ -167,9 +360,7 @@ io.on('connection', (socket) => {
         nickname,
         door,
         amount
-      });
-      await newBet.save();
-
+      }).save();
       // 3. Cập nhật số dư thành viên & Tổng cược phòng (totalBets)
       member.currentBalance -= amount;
 
@@ -179,10 +370,21 @@ io.on('connection', (socket) => {
 
       await room.save();
 
-      // 4. Thông báo cho cả làng cập nhật tổng cược
+      // 4. Phát sóng lệnh cược mới cho tất cả người trong phòng
+      io.to(roomId).emit('new_bet', {
+        userId: member.userId,
+        nickname,
+        avatar: member.avatar,
+        door,
+        amount,
+        timestamp: newBet.createdAt,
+        betId: newBet._id
+      });
+
+      // 5. Thông báo cho cả làng cập nhật tổng cược
       io.to(roomId).emit('room_update', room);
 
-      // 5. Trả về thành công cho người đặt
+      // 6. Trả về thành công cho người đặt
       callback?.({
         success: true,
         newBalance: member.currentBalance,
@@ -193,6 +395,77 @@ io.on('connection', (socket) => {
     } catch (error) {
       console.error("Place bet error:", error);
       callback?.({ success: false, message: "Lỗi hệ thống khi đặt cược" });
+    }
+  });
+
+  // Hủy cược
+  socket.on('cancel_bet', async ({ roomId, betId, userId }, callback) => {
+    console.log({ roomId, betId, userId })
+    try {
+      const room = await Room.findOne({ roomId });
+
+      // 1. Kiểm tra phòng và trạng thái
+      if (!room) {
+        return callback?.({ success: false, message: "Phòng không tồn tại!" });
+      }
+
+      if (room.status !== 'betting') {
+        return callback?.({ success: false, message: "Chỉ có thể hủy cược trong thời gian đặt cược!" });
+      }
+
+      // 2. Tìm bet cần hủy
+      const bet = await Bet.findById(betId);
+
+      if (!bet) {
+        return callback?.({ success: false, message: "Lệnh cược không tồn tại!" });
+      }
+
+      if (bet.userId !== userId) {
+        return callback?.({ success: false, message: "Bạn không có quyền hủy cược này!" });
+      }
+
+      if (bet.status !== 'pending') {
+        return callback?.({ success: false, message: "Lệnh cược này không thể hủy!" });
+      }
+
+      // 3. Hoàn tiền cho người chơi
+      const member = room.members.find(m => m.userId === userId);
+      if (!member) {
+        return callback?.({ success: false, message: "Không tìm thấy thành viên!" });
+      }
+
+      member.currentBalance += bet.amount;
+
+      // 4. Cập nhật totalBets
+      if (room.totalBets && room.totalBets[bet.door]) {
+        room.totalBets[bet.door] = Math.max(0, room.totalBets[bet.door] - bet.amount);
+      }
+
+      await room.save();
+
+      // 5. Xóa hoặc đánh dấu bet là đã hủy
+      await Bet.findByIdAndDelete(betId);
+
+      // 6. Thông báo cho cả phòng về việc hủy cược
+      io.to(roomId).emit('bet_cancelled', {
+        betId,
+        userId,
+        door: bet.door,
+        amount: bet.amount
+      });
+
+      io.to(roomId).emit('room_update', room);
+
+      // 7. Trả về kết quả thành công
+      callback?.({
+        success: true,
+        newBalance: member.currentBalance,
+        message: "Đã hủy cược thành công!"
+      });
+
+    } catch (error) {
+      console.error("Cancel bet error:", error);
+      callback?.({ success: false, message: "Lỗi hệ thống khi hủy cược!" });
     }
   });
 
@@ -245,85 +518,38 @@ io.on('connection', (socket) => {
         door,
         amount: amountPerDoor
       }));
-      await Bet.insertMany(betRecords);
+      const resultsInsert = await Bet.insertMany(betRecords);
 
-      // 6. Đồng bộ toàn phòng
+      // 6. Phát sóng từng lệnh cược cho tất cả người trong phòng
+      const memberInfo = updatedRoom.members.find(m => m.userId === userId);
+      doors.forEach(door => {
+        io.to(roomId).emit('new_bet', {
+          userId,
+          nickname,
+          avatar: memberInfo?.avatar,
+          door,
+          amount: amountPerDoor,
+          timestamp: new Date(),
+          betId: resultsInsert.find(bet => bet.door === door && bet.userId === userId)?._id
+        });
+      });
+
+      // 7. Đồng bộ toàn phòng
       io.to(roomId).emit('room_update', updatedRoom);
-
-      // 7. Trả về kết quả
+      const betIds = {};
+      for (const bet of resultsInsert) {
+        betIds[bet.door] = bet._id;
+      }
+      // 8. Trả về kết quả
       callback?.({
         success: true,
-        newBalance: updatedRoom.members.find(m => m.userId === userId).currentBalance
+        betIds: betIds,
       });
 
     } catch (error) {
       console.error("Batch bet error:", error);
       callback?.({ success: false, message: "Lỗi hệ thống!" });
     }
-  });
-
-  // 4. Mở bát & Tính tiền (Lưu DB)
-  socket.on('open_bowl', async (roomId) => {
-    const room = await Room.findOne({ roomId });
-    const currentRoundId = Array.isArray(room.history) ? room.history.length + 1 : 1;
-
-    // Random kết quả
-    const result = getRandomResult(); // Hàm random 3 con
-
-    // 1. Tìm tất cả lệnh bet của ván này
-    const allBets = await Bet.find({ roomId, roundId: currentRoundId });
-
-    // 2. Tính toán thắng thua và cập nhật từng lệnh Bet
-    for (let bet of allBets) {
-      const matchCount = result.filter(r => r === bet.door).length;
-      if (matchCount > 0) {
-        const winMoney = bet.amount + (bet.amount * matchCount);
-        bet.status = 'win';
-        bet.winAmount = winMoney;
-
-        // Cộng tiền lại cho người chơi trong Room
-        await Room.updateOne(
-          { roomId, "members.socketId": bet.socketId },
-          { $inc: { "members.$.currentBalance": winMoney } }
-        );
-      } else {
-        bet.status = 'lose';
-      }
-      await bet.save();
-    }
-
-    // 3. Cập nhật lịch sử Room
-    room.history.unshift({ roundId: currentRoundId, result });
-    room.status = 'result';
-    await room.save();
-
-    io.to(roomId).emit('game_result', { result, history: room.history });
-
-
-
-    if (room.config.dealerMode === 'rotate') {
-      room.currentDealer.roundsLeft -= 1;
-
-      if (room.currentDealer.roundsLeft <= 0) {
-        // Tìm index của người đang làm cái hiện tại
-        const currentIndex = room.members.findIndex(m => m.socketId === room.currentDealer.socketId);
-        // Chuyển sang người tiếp theo (theo vòng tròn)
-        const nextIndex = (currentIndex + 1) % room.members.length;
-
-        room.currentDealer = {
-          socketId: room.members[nextIndex].socketId,
-          roundsLeft: room.config.rotateRounds,
-          userId: room.members[nextIndex].userId
-        };
-
-        io.to(roomId).emit('new_dealer', {
-          msg: `Đã đến lượt ${room.members[nextIndex].nickname} làm cái!`,
-          dealerId: room.members[nextIndex].socketId
-        });
-      }
-    }
-    await room.save();
-
   });
 
   socket.on('get_recent_rooms_info', async ({ roomIds, userId }, callback) => {
@@ -392,7 +618,6 @@ io.on('connection', (socket) => {
         .limit(limit);
 
       const totalCount = await Bet.countDocuments(query);
-      console.log(history)
       callback({
         success: true,
         data: history,

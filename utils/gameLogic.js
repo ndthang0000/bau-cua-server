@@ -75,8 +75,12 @@ async function calculateRewards(roomId, roundId, finalResult) {
 const startGameLoop = async (io, roomId) => {
   let room = await Room.findOne({ roomId });
 
-  // Kiểm tra: Chỉ chạy nếu đang ở trạng thái có thể bắt đầu
+  // Kiểm tra: Chỉ chạy nếu đang ở trạng thái có thể bắt đầu và mode là AUTO
   if (!room || !['waiting', 'result'].includes(room.status)) return;
+  if (room.config.playMode !== 'auto') {
+    console.log(`Phòng ${roomId} đang ở chế độ manual, không tự động chạy.`);
+    return;
+  }
 
   const currentRoundId = (room.history ? room.history.length : 0) + 1;
 
@@ -129,7 +133,24 @@ const startGameLoop = async (io, roomId) => {
         await updateStatus(io, roomId, 'result', GAME_TIMES.result, finalResult);
 
         // --- BƯỚC QUAN TRỌNG: TỰ ĐỘNG LOOP VÁN MỚI SAU 5 GIÂY ---
-        setTimeout(() => {
+        setTimeout(async () => {
+          // Kiểm tra xem còn người online không trước khi bắt đầu ván mới
+          const roomCheck = await Room.findOne({ roomId });
+
+          if (!roomCheck) {
+            console.log(`Phòng ${roomId} không tồn tại, dừng game loop.`);
+            return;
+          }
+
+          const hasOnlineUsers = roomCheck.members.some(m => m.isOnline);
+
+          if (!hasOnlineUsers) {
+            console.log(`Không còn người online trong phòng ${roomId}, dừng game loop.`);
+            roomCheck.status = 'finished';
+            await roomCheck.save();
+            return;
+          }
+
           console.log(`--- Tự động bắt đầu ván mới cho phòng ${roomId} ---`);
           startGameLoop(io, roomId); // Đệ quy gọi lại chính nó
         }, GAME_TIMES.result * 1000);
@@ -141,4 +162,7 @@ const startGameLoop = async (io, roomId) => {
 
 module.exports = {
   startGameLoop,
+  calculateRewards,
+  updateStatus,
+  GAME_TIMES
 }

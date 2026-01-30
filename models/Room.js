@@ -24,6 +24,7 @@ const RoomSchema = new mongoose.Schema({
     maxPlayers: { type: Number, default: 15 },
     startingBalance: { type: Number, default: 100000 },
     dealerMode: { type: String, enum: ['fixed', 'rotate'], default: 'rotate' },
+    playMode: { type: String, enum: ['auto', 'manual'], default: 'auto' },
     rotateRounds: { type: Number, default: 3 },
     minBet: { type: Number, default: 5000 },
     maxBet: { type: Number, default: 50000 },
