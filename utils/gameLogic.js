@@ -132,6 +132,32 @@ const startGameLoop = async (io, roomId) => {
         // 2. Cập nhật status Result để nắp bát bay ra
         await updateStatus(io, roomId, 'result', GAME_TIMES.result, finalResult);
 
+        // 3. Xử lý xoay vòng nhà cái (nếu có)
+        if (updatedRoom.config.dealerMode === 'rotate') {
+          updatedRoom.currentDealer.roundsLeft -= 1;
+
+          if (updatedRoom.currentDealer.roundsLeft <= 0) {
+            // Tìm index của người đang làm cái hiện tại
+            const currentIndex = updatedRoom.members.findIndex(m => m.userId === updatedRoom.currentDealer.userId);
+            // Chuyển sang người tiếp theo (theo vòng tròn)
+            const nextIndex = (currentIndex + 1) % updatedRoom.members.length;
+
+            updatedRoom.currentDealer = {
+              socketId: updatedRoom.members[nextIndex].socketId,
+              roundsLeft: updatedRoom.config.rotateRounds,
+              userId: updatedRoom.members[nextIndex].userId
+            };
+
+            io.to(roomId).emit('new_dealer', {
+              msg: `Đã đến lượt ${updatedRoom.members[nextIndex].nickname} làm cái!`,
+              dealerId: updatedRoom.members[nextIndex].userId
+            });
+
+            console.log(`[Auto] Phòng ${roomId} đổi nhà cái sang ${updatedRoom.members[nextIndex].nickname}`);
+          }
+          await updatedRoom.save();
+        }
+
         // --- BƯỚC QUAN TRỌNG: TỰ ĐỘNG LOOP VÁN MỚI SAU 5 GIÂY ---
         setTimeout(async () => {
           // Kiểm tra xem còn người online không trước khi bắt đầu ván mới

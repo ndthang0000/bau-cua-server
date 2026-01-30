@@ -237,13 +237,6 @@ io.on('connection', (socket) => {
       updatedRoom.status = 'result';
       await updatedRoom.save();
 
-      io.to(roomId).emit('room_update', updatedRoom);
-      io.to(roomId).emit('phase_change', {
-        phase: 'result',
-        result: finalResult,
-        message: 'Kết quả!'
-      });
-
       // Xử lý xoay vòng nhà cái (nếu có)
       if (updatedRoom.config.dealerMode === 'rotate') {
         updatedRoom.currentDealer.roundsLeft -= 1;
@@ -259,13 +252,19 @@ io.on('connection', (socket) => {
           };
 
           io.to(roomId).emit('new_dealer', {
-            msg: `Đã đến lượt ${updatedRoom.members[nextIndex].nickname} làm cái!`,
+            msg: `Đã đến lượt "${updatedRoom.members[nextIndex].nickname}" làm cái!`,
             dealerId: updatedRoom.members[nextIndex].userId
           });
         }
         await updatedRoom.save();
       }
 
+      io.to(roomId).emit('room_update', updatedRoom);
+      io.to(roomId).emit('phase_change', {
+        phase: 'result',
+        result: finalResult,
+        message: 'Kết quả!'
+      });
       callback?.({
         success: true,
         result: finalResult,
